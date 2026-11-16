@@ -2,7 +2,7 @@
 
 Black Diamond Hub app for a site's speakers: Sonos (through soco, on the LAN)
 and Home Assistant `media_player` entities (on every Home Assistant the hub
-knows about). It was `bdh-app-sonos-control` (`sonos_control`) until 1.0.0.
+knows about). It was `bdh-app-sonos-control` (`sonos_control`) until 3.0.0.
 
 Every room or group is a player card (playing ones first, idle ones as compact
 rows) with play/pause/skip and volume; group cards expand to per-room volume
