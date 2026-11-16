@@ -1,5 +1,5 @@
 from bdh_sdk import PluginSpec, Setting, Tile
-from bdh_sdk.plugins import INT, MULTI
+from bdh_sdk.plugins import INT, LIFECYCLE_ALWAYS, MULTI, NETWORK_LAN
 
 spec = PluginSpec(
     id="sonos_control",
@@ -26,4 +26,10 @@ spec = PluginSpec(
                 minimum=0, maximum=60, unit="min",
                 help="How long a paused group stays on the Music tile so it can be resumed."),
     ),
+    api_version=2,
+    # soco finds speakers by SSDP multicast and talks to each one over HTTP on the LAN.
+    network=NETWORK_LAN,
+    # The Music tile shows what's playing right now, so the app has to be running.
+    lifecycle=LIFECYCLE_ALWAYS,
+    memory_mb=128,
 )
