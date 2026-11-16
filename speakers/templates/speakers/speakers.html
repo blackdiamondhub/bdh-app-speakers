@@ -1,7 +1,7 @@
 {% extends 'base.html' %}
 {% load static %}
 
-{% block title %}Music{% endblock %}
+{% block title %}Speakers{% endblock %}
 
 {% block content %}
 <style>
@@ -395,8 +395,8 @@
 
 <script>
 (function () {
-    const STATE_URL = "{% url 'sonos_state' %}";
-    const ACTION_URL = "{% url 'sonos_action' %}";
+    const STATE_URL = "{% url 'speakers_state' %}";
+    const ACTION_URL = "{% url 'speakers_action' %}";
     const CSRF = "{{ csrf_token }}";
     const COLORS = ['#3cc8b4', '#ffc35c', '#5ec8ff', '#ff7eb6', '#b28dff', '#8be36b'];
     const POLL_MS = 2000;
@@ -426,6 +426,10 @@
     const isPlaying = g => g.state === 'PLAYING' || g.state === 'TRANSITIONING';
     const roomById = id => state.rooms.find(r => r.uid === id);
     const shownRooms = () => state.rooms.filter(r => r.shown !== false);
+    // Rooms can only be grouped within one system (and one Home Assistant): "sonos" or "ha:<instance>".
+    const scopeOf = uid => uid.slice(0, uid.lastIndexOf(':'));
+    const pickRooms = () => shownRooms().filter(r => scopeOf(r.uid) === pk.scope &&
+        (r.can_group !== false || pk.orig.has(r.uid)));
     const isShown = uid => (roomById(uid) || {}).shown !== false;
     const groupById = id => state && state.groups.find(g => g.id === id);
     const groupOfRoom = uid => state.groups.find(g => g.members.includes(uid));
@@ -471,7 +475,7 @@
 
     const roomsBtn = g => '<div class="btns">' +
         (g.members.length > 1 ? `<button class="rb ug" data-ungroup="${esc(g.id)}" title="Give every room its own player"><i class="fas fa-unlink"></i> Ungroup</button>` : '') +
-        `<button class="rb" data-rooms="${esc(g.id)}"><i class="fas fa-house-signal"></i> Rooms</button></div>`;
+        (g.can_group === false ? '' : `<button class="rb" data-rooms="${esc(g.id)}"><i class="fas fa-house-signal"></i> Rooms</button>`) + '</div>';
 
     function activeCard(g, c) {
         const multi = g.members.length > 1;
@@ -497,7 +501,7 @@
         }).join('') + '</div>' : '';
         const tx = g.tv ? '<div class="tx"><span class="tvnote">Volume only</span></div>' :
             `<div class="tx"><button data-tx="previous"><i class="fas fa-backward-step"></i></button>` +
-            `<button class="pp" data-tx="${playing ? 'pause' : 'play'}"><i class="fas ${playing ? 'fa-pause' : 'fa-play'}"></i></button>` +
+            `<button class="pp" data-tx="${playing ? 'pause' : 'play'}"${playing && g.can_pause === false ? ' disabled title="This speaker can\u2019t pause"' : ''}><i class="fas ${playing ? 'fa-pause' : 'fa-play'}"></i></button>` +
             `<button data-tx="next"><i class="fas fa-forward-step"></i></button></div>`;
         const vol = `<div class="vol"><i class="fas fa-volume-low"></i>${slider('group', g.id, g.volume, capOf(g.members))}<span class="num">${g.volume}</span>` +
             (multi ? `<button class="round-btn ${open ? 'on' : ''}" data-expand="${esc(g.id)}" title="Room volumes"><i class="fas fa-sliders"></i></button>` : '') +
@@ -554,7 +558,7 @@
     function layoutRooms() {
         const pos = {};
         const by = {};
-        shownRooms().forEach(r => (by[r.floor] = by[r.floor] || []).push(r));
+        pickRooms().forEach(r => (by[r.floor] = by[r.floor] || []).push(r));
         const place = (list, x0, width, top, maxW) => {
             if (!list || !list.length) return;
             const gap = 2;
@@ -598,7 +602,7 @@
 
     function renderPicker() {
         if (!pk || !state) return;
-        const rooms = shownRooms();
+        const rooms = pickRooms();
         const flat = !rooms.some(r => r.floor && r.floor !== 'other');
         document.getElementById('pk-stage').classList.toggle('flat', flat);
         const pos = flat ? {} : layoutRooms();
@@ -630,7 +634,7 @@
         const g = groupById(gid);
         if (!g) return;
         const mine = g.members.filter(isShown);
-        pk = { origin: gid, orig: new Set(mine), pick: new Set(mine), busy: false };
+        pk = { origin: gid, scope: scopeOf(gid), orig: new Set(mine), pick: new Set(mine), busy: false };
         els.picker.classList.add('open');
         renderPicker();
     }

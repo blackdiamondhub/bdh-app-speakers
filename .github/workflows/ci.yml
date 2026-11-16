@@ -9,5 +9,5 @@ jobs:
   hub:
     uses: blackdiamondlodge/bdh-sdk/.github/workflows/app-ci.yml@v0
     with:
-      app_id: sonos_control
-      test_module: sonos_control.tests
+      app_id: speakers
+      test_module: speakers.tests

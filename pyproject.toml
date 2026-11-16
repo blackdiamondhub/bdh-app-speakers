@@ -3,28 +3,28 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "bdh-app-sonos-control"
-version = "2.7.0"
-description = "Black Diamond Hub app: Sonos room grouping, volume and playback control"
+name = "bdh-app-speakers"
+version = "1.0.0"
+description = "Black Diamond Hub app: speaker grouping, volume and playback control for Sonos and Home Assistant media players"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
 dependencies = [
-    "bdh-sdk>=0.27,<1",
+    "bdh-sdk>=0.29,<1",
     "soco",
 ]
 
 [project.urls]
-Source = "https://github.com/blackdiamondlodge/bdh-app-sonos-control"
+Source = "https://github.com/blackdiamondlodge/bdh-app-speakers"
 
 [project.entry-points."blackdiamondhub.plugins"]
-sonos_control = "sonos_control.plugin:spec"
+speakers = "speakers.plugin:spec"
 
 [tool.setuptools.packages.find]
-include = ["sonos_control", "sonos_control.*"]
+include = ["speakers", "speakers.*"]
 
 [tool.setuptools.package-data]
-sonos_control = [
+speakers = [
     "templates/**/*",
     "static/**/*",
     "migrations/*.py",
