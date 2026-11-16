@@ -57,6 +57,16 @@ from `[apps.sonos_control]` in its `sites/<site>/site.toml`):
 - `BDH_SONOS_CONTROL_PAUSE_GRACE`: minutes a paused group stays on the
   homepage Music tile (default 5, also on the Settings page).
 
+## Container (hub API 2)
+
+Since 2.7.0 the app can run in its own container: `network: lan` (soco finds
+speakers by SSDP multicast and talks to each one over HTTP, so the supervisor
+runs it on the host network and the admin must approve that), `lifecycle:
+always` (the Music tile shows what is playing now), `memory_mb: 128`, no broker
+permissions. Settings come from the hub through the broker: the Settings page
+first, then `[apps.sonos_control]` in the site's `site.toml`. The app has no
+database tables, so moving between in-process and container needs no migration.
+
 ## Development
 
 CI (`.github/workflows/ci.yml`) uses the reusable `app-ci.yml` from
