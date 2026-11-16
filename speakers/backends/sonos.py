@@ -1,7 +1,9 @@
-"""Sonos service layer: cached discovery, shared state snapshots and actions.
+"""Sonos backend: cached soco discovery, shared state snapshots and actions.
 
 Every browser polls the same cached snapshot, so the speakers see a bounded
-amount of traffic no matter how many screens are open.
+amount of traffic no matter how many screens are open. Room ids here are the
+raw Sonos uids (RINCON_...); :mod:`speakers.service` prefixes them with
+``sonos:``.
 """
 import json
 import logging
@@ -12,23 +14,16 @@ from concurrent.futures import ThreadPoolExecutor
 
 import soco
 from bdh_sdk.plugins import as_list
-from bdh_sdk.settings import app_setting
 from bdh_sdk.storage import app_state
+
+from ..conf import APP_ID, DEFAULT_PRESETS, FLOOR_ORDER, _meta, presets, room_layout, setting  # noqa: F401
+from .base import Backend, SpeakerError, split_id
 
 log = logging.getLogger(__name__)
 
 DISCOVERY_TTL = 60
 SNAPSHOT_TTL = 1.5
 NIGHT_TTL = 30
-
-# Rooms and quick groups come from the site's settings (see README):
-#   rooms:   {sonos room name: {label, floor, icon}}; floor is upper / main / lower
-#            (inside the house diagram) or outside_main / outside_lower. With no
-#            floors set, the room picker shows a plain grid instead.
-#   presets: [{id, label, icon, rooms: [room names] or "*"}]
-DEFAULT_PRESETS = [{'id': 'all', 'label': 'Everywhere', 'icon': 'fa-house', 'rooms': '*'}]
-
-FLOOR_ORDER = ['upper', 'main', 'outside_main', 'lower', 'outside_lower', 'other']
 
 _lock = threading.Lock()
 _found = {}           # uid -> SoCo, every room on the network
@@ -43,54 +38,45 @@ _night_at = 0.0
 _pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix='sonos')
 
 
-class SonosError(Exception):
+class SonosError(SpeakerError):
     pass
 
 
 def _discover_sonos(**kwargs):
     """Discover Sonos zones, optionally binding to a specific interface.
 
-    Set BDH_SONOS_CONTROL_INTERFACE (legacy SONOS_INTERFACE) to the IP of the
-    interface on the Sonos LAN (needed in Docker with host networking, where
-    soco may pick the wrong interface).
+    Set BDH_SPEAKERS_INTERFACE (legacy BDH_SONOS_CONTROL_INTERFACE,
+    SONOS_INTERFACE) to the IP of the interface on the Sonos LAN (needed in
+    Docker with host networking, where soco may pick the wrong interface).
     """
-    interface = app_setting('sonos_control', 'interface', '', legacy=('SONOS_INTERFACE',))
+    interface = setting('interface', '', legacy=('SONOS_INTERFACE',))
     if interface:
         kwargs.setdefault('interface_addr', interface)
     return soco.discover(**kwargs)
 
 
-def _structured(key, default):
-    """A dict/list setting; environment values are JSON."""
-    value = app_setting('sonos_control', key, default)
-    if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except ValueError:
-            log.warning('sonos_control %s is not valid JSON; using the default', key)
-            return default
-    return value
-
-
-def room_layout():
-    return _structured('rooms', {})
-
-
-def presets():
-    return _structured('presets', DEFAULT_PRESETS)
-
-
 def _model_filter():
     """Lower-cased model-name fragments to control, or None for every model ("*")."""
-    raw = app_setting('sonos_control', 'models', 'Amp')
+    raw = setting('models', 'Amp') or 'Amp'
     models = [m.strip().lower() for m in str(raw).split(',') if m.strip()]
     return None if '*' in models else models
 
 
 def picked_speakers():
-    """Room uids ticked on the Settings page, or None if never picked."""
-    picked = app_setting('sonos_control', 'speakers', None, cast=as_list)
-    return None if picked is None else list(picked)
+    """Sonos uids ticked on the Settings page, or None if never picked.
+
+    The setting holds ids from every backend; ``sonos:<uid>`` and bare uids
+    (saved before 1.0) are Sonos rooms.
+    """
+    picked = setting('speakers', None, cast=as_list)
+    if picked is None:
+        return None
+    out = []
+    for value in picked:
+        key, uid = split_id(value)
+        if key == 'sonos' and uid:
+            out.append(uid)
+    return out
 
 
 def _model(zone):
@@ -147,7 +133,7 @@ def zones(force=False):
 
 def speaker_choices():
     """Every room on the network for the Settings page, plus ticked ones now offline."""
-    state = app_state('sonos_control')
+    state = app_state(APP_ID)
     known = state.get('speaker_names') or {}
     choices = {}
     for uid, z in _discover_all().items():
@@ -159,12 +145,6 @@ def speaker_choices():
         if uid not in choices:
             choices[uid] = f'{known.get(uid, uid)} \u2013 offline'
     return sorted(choices.items(), key=lambda c: c[1].lower())
-
-
-def _meta(name):
-    m = room_layout().get(name) or {}
-    return {'label': m.get('label') or name, 'floor': m.get('floor') or 'other',
-            'icon': m.get('icon') or 'fa-volume-high'}
 
 
 def source_for(uri, track):
@@ -295,11 +275,11 @@ def _build_snapshot():
 def night_status():
     """Night volume limit from the appdaemon-sonos-night app, or None.
 
-    BDH_SONOS_CONTROL_NIGHT_URL points at its status endpoint. The limit is
+    BDH_SPEAKERS_NIGHT_URL points at its status endpoint. The limit is
     enforced there; the hub only shows it and caps its own sliders.
     """
     global _night, _night_at
-    url = app_setting('sonos_control', 'night_url', '')
+    url = setting('night_url', '')
     if not url:
         return None
     if time.monotonic() - _night_at < NIGHT_TTL:
@@ -563,3 +543,56 @@ def set_room_mute(uid, muted):
 
 def _clamp(v, cap=None):
     return max(0, min(100 if cap is None else cap, int(v)))
+
+
+# ---------------------------------------------------------------- backend
+
+class SonosBackend(Backend):
+    key = 'sonos'
+    label = 'Sonos'
+    supports = frozenset({'grouping', 'night'})
+
+    def snapshot(self, force=False):
+        snap = snapshot(force)
+        rooms = [{**r, 'can_group': True, 'origin': self.label} for r in snap['rooms']]
+        groups = [{**g, 'can_pause': not g.get('tv')} for g in snap['groups']]
+        return {'rooms': rooms, 'groups': groups}
+
+    def invalidate(self):
+        invalidate()
+
+    def choices(self):
+        return speaker_choices()
+
+    def names(self):
+        return {z.player_name for z in _discover_all().values()}
+
+    def extra(self):
+        return {'night': night_status()}
+
+    def transport(self, group, op):
+        transport(group, op)
+
+    def set_group_volume(self, group, volume):
+        set_group_volume(group, volume)
+
+    def set_room_volume(self, room, volume):
+        set_room_volume(room, volume)
+
+    def set_room_mute(self, room, muted):
+        set_room_mute(room, muted)
+
+    def pause_all(self):
+        pause_all()
+
+    def set_members(self, group, rooms):
+        return set_rooms(group, rooms)
+
+    def set_group(self, names):
+        return set_group(names)
+
+    def ungroup(self, group):
+        ungroup(group)
+
+    def ungroup_all(self):
+        ungroup_all()
