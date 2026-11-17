@@ -2,7 +2,7 @@ import json
 import os
 from unittest.mock import MagicMock, patch
 
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 
 from speakers import service
@@ -783,3 +783,22 @@ class MixedBackendTests(HABase):
         self.assertEqual({r['backend'] for r in snap['rooms']}, {'sonos', 'ha'})
         for g in snap['groups']:
             self.assertEqual({m.split(':')[0] for m in g['members']}, {g['backend']})
+
+
+class HubFrameLayoutTests(SimpleTestCase):
+    """The app renders inside the hub's iframe, already below the hub navbar, so its
+    CSS must not reserve space for that navbar (top:62px / 100vh-62px / phone 118px)
+    nor scope rules under the hub's `.navbar`, which doesn't exist in the iframe."""
+
+    def test_no_hub_navbar_offsets(self):
+        import pathlib
+        import re
+        root = pathlib.Path(__file__).resolve().parent.parent
+        self.assertTrue((root / "templates").is_dir())
+        pattern = re.compile(r"top\s*:\s*(6[0-9]|118)px|100vh\s*-\s*(6[0-9]|118)px|\.navbar(?![-\w])")
+        hits = []
+        for path in list(root.glob("templates/**/*.html")) + list(root.glob("static/**/*.css")):
+            for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                if pattern.search(line):
+                    hits.append(f"{path.relative_to(root)}:{n}: {line.strip()}")
+        self.assertEqual(hits, [])

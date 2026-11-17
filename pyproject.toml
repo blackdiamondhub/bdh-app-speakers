@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bdh-app-speakers"
-version = "3.0.0"
+version = "3.0.1"
 description = "Black Diamond Hub app: speaker grouping, volume and playback control for Sonos and Home Assistant media players"
 readme = "README.md"
 license = { text = "MIT" }
