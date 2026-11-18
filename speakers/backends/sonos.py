@@ -45,11 +45,11 @@ class SonosError(SpeakerError):
 def _discover_sonos(**kwargs):
     """Discover Sonos zones, optionally binding to a specific interface.
 
-    Set BDH_SPEAKERS_INTERFACE (legacy BDH_SONOS_CONTROL_INTERFACE,
-    SONOS_INTERFACE) to the IP of the interface on the Sonos LAN (needed in
-    Docker with host networking, where soco may pick the wrong interface).
+    Set BDH_SPEAKERS_INTERFACE to the IP of the interface on the Sonos LAN
+    (needed in Docker with host networking, where soco may pick the wrong
+    interface).
     """
-    interface = setting('interface', '', legacy=('SONOS_INTERFACE',))
+    interface = setting('interface', '')
     if interface:
         kwargs.setdefault('interface_addr', interface)
     return soco.discover(**kwargs)
