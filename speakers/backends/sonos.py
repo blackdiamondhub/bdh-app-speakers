@@ -5,17 +5,16 @@ amount of traffic no matter how many screens are open. Room ids here are the
 raw Sonos uids (RINCON_...); :mod:`speakers.service` prefixes them with
 ``sonos:``.
 """
-import json
 import logging
 import threading
 import time
-import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
 import soco
 from bdh_sdk.plugins import as_list
 from bdh_sdk.storage import app_state
 
+from .. import quiet
 from ..conf import APP_ID, DEFAULT_PRESETS, FLOOR_ORDER, _meta, presets, room_layout, setting  # noqa: F401
 from .base import Backend, SpeakerError, split_id
 
@@ -23,7 +22,6 @@ log = logging.getLogger(__name__)
 
 DISCOVERY_TTL = 60
 SNAPSHOT_TTL = 1.5
-NIGHT_TTL = 30
 
 _lock = threading.Lock()
 _found = {}           # uid -> SoCo, every room on the network
@@ -33,8 +31,6 @@ _zones_at = 0.0
 _zones_for = None     # the picked list _zones was filtered with
 _snapshot = None
 _snapshot_at = 0.0
-_night = None
-_night_at = 0.0
 _pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix='sonos')
 
 
@@ -269,40 +265,12 @@ def _build_snapshot():
         out_groups.append({'id': cuid, 'members': members, **gs})
     out_groups.sort(key=lambda g: room_rank[g['members'][0]])
     return {'rooms': rooms, 'groups': out_groups, 'presets': presets(),
-            'night': night_status(), 'ts': time.time()}
+            'night': quiet.status(), 'ts': time.time()}
 
 
-def night_status():
-    """Night volume limit from the appdaemon-sonos-night app, or None.
-
-    BDH_SPEAKERS_NIGHT_URL points at its status endpoint. The limit is
-    enforced there; the hub only shows it and caps its own sliders.
-    """
-    global _night, _night_at
-    url = setting('night_url', '')
-    if not url:
-        return None
-    if time.monotonic() - _night_at < NIGHT_TTL:
-        return _night
-    try:
-        with urllib.request.urlopen(url, timeout=2) as res:
-            data = json.loads(res.read())
-        _night = {'active': bool(data.get('active')), 'limit': int(data['limit']),
-                  'end': str(data.get('end', '')), 'rooms': list(data.get('rooms') or [])}
-    except Exception as exc:  # noqa: BLE001
-        log.warning('night limit status failed: %s', exc)
-        _night = None
-    _night_at = time.monotonic()
-    return _night
-
-
-def _night_cap(zones_):
-    """The night limit if every one of these zones is under it, else None."""
-    night = night_status()
-    if not night or not night['active']:
-        return None
-    names = set(night['rooms'])
-    return night['limit'] if all(z.player_name in names for z in zones_) else None
+def _quiet_cap(zones_):
+    """The quiet-hours limit if every one of these zones is under it, else None."""
+    return quiet.cap_for([z.player_name for z in zones_])
 
 
 def snapshot(force=False):
@@ -529,12 +497,12 @@ def transport(group_id, op):
 
 def set_group_volume(group_id, volume):
     group = _group(group_id)
-    group.volume = _clamp(volume, _night_cap(list(group.members)))
+    group.volume = _clamp(volume, _quiet_cap(list(group.members)))
 
 
 def set_room_volume(uid, volume):
     z = _zone(uid)
-    z.volume = _clamp(volume, _night_cap([z]))
+    z.volume = _clamp(volume, _quiet_cap([z]))
 
 
 def set_room_mute(uid, muted):
@@ -568,7 +536,7 @@ class SonosBackend(Backend):
         return {z.player_name for z in _discover_all().values()}
 
     def extra(self):
-        return {'night': night_status()}
+        return {'night': quiet.status()}
 
     def transport(self, group, op):
         transport(group, op)

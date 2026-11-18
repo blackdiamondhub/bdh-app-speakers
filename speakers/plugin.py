@@ -1,5 +1,5 @@
 from bdh_sdk import PluginSpec, Setting, Tile
-from bdh_sdk.plugins import INT, LIFECYCLE_ALWAYS, MULTI, NETWORK_LAN, STR
+from bdh_sdk.plugins import BOOL, INT, LIFECYCLE_ALWAYS, MULTI, NETWORK_LAN, STR, TIME
 
 spec = PluginSpec(
     id="speakers",
@@ -37,6 +37,19 @@ spec = PluginSpec(
         Setting("interface", "Sonos: network interface", type=STR, default="",
                 help="Sonos only. IP of the hub's interface on the Sonos network, when "
                      "discovery picks the wrong one."),
+        Setting("quiet_enabled", "Quiet hours", type=BOOL, default=False,
+                help="Limit the volume of the rooms below between the two times, e.g. "
+                     "outdoor speakers at night. Applies to changes from the Sonos app "
+                     "too. An admin can lift it for the rest of the night from the "
+                     "Speakers page."),
+        Setting("quiet_start", "Quiet hours: start", type=TIME, default="22:00"),
+        Setting("quiet_end", "Quiet hours: end", type=TIME, default="07:00",
+                help="May be after midnight."),
+        Setting("quiet_limit", "Quiet hours: volume limit", type=INT, default=25,
+                minimum=0, maximum=100, unit="%"),
+        Setting("quiet_rooms", "Quiet hours: rooms", type=MULTI, default=None,
+                choices_from="speakers.quiet.room_choices",
+                help="Sonos rooms held to the limit."),
     ),
     # Home Assistant media players: read their state, call media_player services,
     # and fetch album art through HA's media_player proxy.

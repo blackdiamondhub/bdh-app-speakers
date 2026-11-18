@@ -163,6 +163,7 @@
     }
     .night i { font-size: 16px; }
     .night b { color: #fff; }
+    .night .pill { margin-left: auto; padding: 6px 12px; font-size: 13px; flex: none; }
     input[type=range].sl::-webkit-slider-thumb {
         -webkit-appearance: none; width: 20px; height: 20px; border-radius: 50%;
         background: #fff; box-shadow: 0 2px 6px rgba(0, 0, 0, .4);
@@ -436,7 +437,7 @@
     const names = uids => uids.map(u => (roomById(u) || {}).label || '?');
     const titleOf = g => g.title || (g.source && g.source.name) || 'music';
 
-    // Night limit (enforced by AppDaemon): the cap for these rooms, or null.
+    // Quiet hours (enforced by the app, also against the Sonos app): the cap for these rooms, or null.
     const nightOn = () => !!(state.night && state.night.active);
     const limited = uid => nightOn() && state.night.rooms.includes((roomById(uid) || {}).name);
     const capOf = uids => (uids.length && uids.every(limited)) ? state.night.limit : null;
@@ -447,10 +448,17 @@
 
     function renderNight() {
         const n = state.night;
-        els.night.innerHTML = nightOn()
-            ? `<div class="night"><i class="fas fa-moon moon"></i><span><b>Quiet hours</b> &middot; outdoor speakers ` +
-              `are limited to <b>${n.limit}%</b> until ${esc(clock(n.end))}</span></div>`
-            : '';
+        const btn = (lift, label) => state.admin
+            ? `<button class="pill" data-quiet="${lift ? 1 : 0}">${label}</button>` : '';
+        if (nightOn()) {
+            els.night.innerHTML = `<div class="night"><i class="fas fa-moon moon"></i><span><b>Quiet hours</b> &middot; outdoor speakers ` +
+                `are limited to <b>${n.limit}%</b> until ${esc(clock(n.end))}</span>${btn(true, 'Lift tonight')}</div>`;
+        } else if (n && n.lifted) {
+            els.night.innerHTML = `<div class="night"><i class="fas fa-moon moon"></i><span><b>Quiet hours lifted</b> ` +
+                `until ${esc(clock(n.end))}</span>${btn(false, 'Restore limit')}</div>`;
+        } else {
+            els.night.innerHTML = '';
+        }
     }
 
     // ------------------------------------------------------------ players
@@ -776,6 +784,11 @@
 
     // Volume sliders: send while dragging (throttled) and once on release.
     const timers = {};
+    let capWarned = false;          // one quiet-hours toast per drag
+    els.night.addEventListener('click', e => {
+        const b = e.target.closest('[data-quiet]');
+        if (b) act({ action: 'quiet_override', lift: b.dataset.quiet === '1' });
+    });
     function sendVolume(input) {
         const v = +input.value;
         if (input.dataset.kind === 'group') act({ action: 'group_volume', group: input.dataset.id, volume: v }, { quiet: true });
@@ -785,7 +798,13 @@
         const s = e.target;
         if (!s.classList.contains('sl')) return;
         lastPlayersHtml = null;       // DOM now differs from the last render
-        if (s.dataset.cap && +s.value > +s.dataset.cap) s.value = s.dataset.cap;
+        if (s.dataset.cap && +s.value > +s.dataset.cap) {
+            s.value = s.dataset.cap;
+            if (!capWarned) {
+                capWarned = true;
+                toast(`Quiet hours: outdoor speakers are limited to ${s.dataset.cap}% until ${clock(state.night.end)}`);
+            }
+        }
         s.style.setProperty('--p', s.value + '%');
         const num = s.closest('.vol, .room').querySelector('.num, .pct');
         if (num) num.textContent = s.value;
@@ -795,7 +814,7 @@
     els.players.addEventListener('change', e => {
         if (e.target.classList.contains('sl')) sendVolume(e.target);
     });
-    els.players.addEventListener('pointerdown', e => { if (e.target.classList.contains('sl')) dragging++; });
+    els.players.addEventListener('pointerdown', e => { if (e.target.classList.contains('sl')) { dragging++; capWarned = false; } });
     window.addEventListener('pointerup', () => { if (dragging) setTimeout(() => { dragging = 0; }, 400); });
     window.addEventListener('pointercancel', () => { dragging = 0; });
 

@@ -1,3 +1,4 @@
+import datetime as dt
 import json
 import os
 from unittest.mock import MagicMock, patch
@@ -5,7 +6,7 @@ from unittest.mock import MagicMock, patch
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 
-from speakers import service
+from speakers import enforcer, quiet, service
 from speakers.backends import SpeakerError
 from speakers.backends import ha as ha_backend
 from speakers.backends import sonos
@@ -235,49 +236,172 @@ class SnapshotTests(TestCase):
     NIGHT = {'active': True, 'limit': 25, 'end': '07:00', 'rooms': ['Top Deck', 'Hot Tub']}
 
     def test_night_limit_caps_outdoor_room_volume(self):
-        with patch('speakers.backends.sonos.night_status', return_value=self.NIGHT):
+        with patch('speakers.quiet.status', return_value=self.NIGHT):
             sonos.set_room_volume('TD', 80)
             sonos.set_room_volume('DR', 80)
         self.assertEqual(self.zs[1].volume, 25)
         self.assertEqual(self.zs[0].volume, 80)
 
     def test_night_limit_caps_group_only_when_all_rooms_limited(self):
-        with patch('speakers.backends.sonos.night_status', return_value=self.NIGHT):
+        with patch('speakers.quiet.status', return_value=self.NIGHT):
             sonos.set_group_volume('HT', 70)
             sonos.set_group_volume('DR', 70)
         self.assertEqual(self.zs[2].group.volume, 25)
         self.assertEqual(self.zs[0].group.volume, 70)
 
     def test_inactive_night_limit_does_not_cap(self):
-        with patch('speakers.backends.sonos.night_status', return_value=dict(self.NIGHT, active=False)):
+        with patch('speakers.quiet.status', return_value=dict(self.NIGHT, active=False)):
             sonos.set_room_volume('TD', 80)
         self.assertEqual(self.zs[1].volume, 80)
 
 
-class NightStatusTests(TestCase):
+QUIET_ENV = {'BDH_SPEAKERS_QUIET_ENABLED': 'true', 'BDH_SPEAKERS_QUIET_START': '22:00',
+             'BDH_SPEAKERS_QUIET_END': '07:00', 'BDH_SPEAKERS_QUIET_LIMIT': '25',
+             'BDH_SPEAKERS_QUIET_ROOMS': '["Top Deck", "Hot Tub"]'}
+
+
+def at(h, m=0, day=18):
+    return dt.datetime(2026, 11, day, h, m, tzinfo=dt.timezone.utc)
+
+
+class QuietHoursTests(TestCase):
     def setUp(self):
-        sonos._night_at = 0.0
+        quiet.app_state(quiet.APP_ID).delete(quiet.OVERRIDE_KEY)
+        quiet.invalidate()
+        env = patch.dict(os.environ, QUIET_ENV)
+        env.start()
+        self.addCleanup(env.stop)
 
-    tearDown = setUp
+    def test_window_crossing_midnight(self):
+        s, e = dt.time(22), dt.time(7)
+        self.assertEqual(quiet.window(at(23), s, e), (True, at(7, day=19)))
+        self.assertEqual(quiet.window(at(3), s, e), (True, at(7)))
+        self.assertEqual(quiet.window(at(7), s, e), (False, None))
+        self.assertEqual(quiet.window(at(12), s, e), (False, None))
 
-    def test_off_without_url(self):
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop('BDH_SPEAKERS_NIGHT_URL', None)
-            self.assertIsNone(sonos.night_status())
+    def test_same_day_window_and_empty_window(self):
+        self.assertEqual(quiet.window(at(13), dt.time(12), dt.time(14)), (True, at(14)))
+        self.assertEqual(quiet.window(at(13), dt.time(9), dt.time(9)), (False, None))
 
-    @patch('speakers.backends.sonos.urllib.request.urlopen')
-    def test_reads_appdaemon_status(self, urlopen):
-        body = b'{"active": true, "limit": 25, "end": "07:00", "rooms": ["Top Deck"], "overridden": false}'
-        urlopen.return_value.__enter__.return_value.read.return_value = body
-        with patch.dict(os.environ, {'BDH_SPEAKERS_NIGHT_URL': 'http://ad/api/appdaemon/sonos_night'}):
-            self.assertEqual(sonos.night_status(),
-                             {'active': True, 'limit': 25, 'end': '07:00', 'rooms': ['Top Deck']})
+    def test_active_inside_window(self):
+        q = quiet.compute(at(23))
+        self.assertEqual((q['active'], q['limit'], q['rooms']), (True, 25, ['Top Deck', 'Hot Tub']))
+        self.assertFalse(quiet.compute(at(12))['active'])
 
-    @patch('speakers.backends.sonos.urllib.request.urlopen', side_effect=OSError('down'))
-    def test_unreachable_means_no_limit_shown(self, urlopen):
-        with patch.dict(os.environ, {'BDH_SPEAKERS_NIGHT_URL': 'http://ad/x'}):
-            self.assertIsNone(sonos.night_status())
+    def test_off_when_disabled_or_no_rooms(self):
+        with patch.dict(os.environ, {'BDH_SPEAKERS_QUIET_ENABLED': 'false'}):
+            self.assertIsNone(quiet.compute(at(23)))
+        with patch.dict(os.environ, {'BDH_SPEAKERS_QUIET_ROOMS': '[]'}):
+            self.assertIsNone(quiet.compute(at(23)))
 
+    def test_lift_lasts_until_the_window_ends(self):
+        quiet.lift(True, now=at(23))
+        self.assertTrue(quiet.compute(at(23, 30))['lifted'])
+        self.assertFalse(quiet.compute(at(23, 30))['active'])
+        self.assertTrue(quiet.compute(at(6, 59, day=19))['lifted'])
+        # The next night the limit is back on its own.
+        self.assertTrue(quiet.compute(at(23, day=19))['active'])
+
+    def test_restore_after_lift(self):
+        quiet.lift(True, now=at(23))
+        quiet.lift(False)
+        self.assertTrue(quiet.compute(at(23, 30))['active'])
+
+    def test_lift_outside_window_is_refused(self):
+        with self.assertRaises(quiet.QuietError):
+            quiet.lift(True, now=at(12))
+
+    def test_cap_for_needs_every_room_limited(self):
+        with patch('speakers.quiet.status', return_value=quiet.compute(at(23))):
+            self.assertEqual(quiet.cap_for(['Top Deck', 'Hot Tub']), 25)
+            self.assertIsNone(quiet.cap_for(['Top Deck', 'Dining Room']))
+            self.assertIsNone(quiet.cap_for([]))
+
+    def test_bad_setting_means_no_limit(self):
+        with patch('speakers.quiet.compute', side_effect=ValueError('bad')):
+            self.assertIsNone(quiet.status(force=True))
+
+
+class QuietViewTests(TestCase):
+    def setUp(self):
+        quiet.app_state(quiet.APP_ID).delete(quiet.OVERRIDE_KEY)
+        self.addCleanup(quiet.app_state(quiet.APP_ID).delete, quiet.OVERRIDE_KEY)
+
+    def post(self, body):
+        return self.client.post(reverse('speakers_action'), json.dumps(body), content_type='application/json')
+
+    @patch('speakers.views.quiet.lift')
+    def test_only_admins_can_lift(self, lift):
+        self.assertEqual(self.post({'action': 'quiet_override', 'lift': True}).status_code, 403)
+        lift.assert_not_called()
+
+    @patch('speakers.views.enforcer.wake')
+    @patch('speakers.views.service.snapshot', return_value={'rooms': [], 'groups': [], 'presets': []})
+    @patch('speakers.views.quiet.lift')
+    @patch('speakers.views.is_admin', return_value=True)
+    def test_admin_lifts_and_restores(self, admin, lift, snap, wake):
+        res = self.post({'action': 'quiet_override', 'lift': True})
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.json()['admin'])
+        lift.assert_called_once_with(True)
+        wake.assert_not_called()
+        self.post({'action': 'quiet_override', 'lift': False})
+        lift.assert_called_with(False)
+        wake.assert_called_once()
+
+    @patch('speakers.views.quiet.lift', side_effect=quiet.QuietError("Quiet hours aren't on right now"))
+    @patch('speakers.views.is_admin', return_value=True)
+    def test_lift_outside_window_is_a_400(self, admin, lift):
+        res = self.post({'action': 'quiet_override', 'lift': True})
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("aren't on", res.json()['error'])
+
+    @patch('speakers.views.is_admin', return_value=True)
+    def test_lift_must_be_a_bool(self, admin):
+        self.assertEqual(self.post({'action': 'quiet_override', 'lift': 'yes'}).status_code, 400)
+
+    @patch('speakers.views.service.snapshot', return_value={'rooms': [], 'groups': [], 'presets': []})
+    def test_state_says_not_admin(self, snap):
+        self.assertFalse(self.client.get(reverse('speakers_state')).json()['admin'])
+
+
+class EnforcerTests(TestCase):
+    def setUp(self):
+        self.zs = household()
+        self.addCleanup(enforcer._subs.clear)
+
+    def test_does_not_start_under_tests(self):
+        self.assertFalse(enforcer.should_start(['manage.py', 'test']))
+        self.assertTrue(enforcer.should_start(['/x/bdh_sdk/runtime/__main__.py']))
+
+    def test_sweep_turns_limited_rooms_down(self):
+        self.zs[1].volume = 60
+        self.zs[0].volume = 60
+        night = {'active': True, 'limit': 25, 'rooms': ['Top Deck']}
+        with patch('speakers.quiet.status', return_value=night), \
+                patch('speakers.backends.sonos._discover_all', return_value={z.uid: z for z in self.zs}), \
+                patch('speakers.enforcer._subscribe') as sub:
+            enforcer.sweep()
+        self.assertEqual((self.zs[1].volume, self.zs[0].volume), (25, 60))
+        sub.assert_called_once_with('Top Deck', self.zs[1])
+
+    def test_event_over_the_limit_turns_down(self):
+        night = {'active': True, 'limit': 25, 'rooms': ['Top Deck']}
+        with patch('speakers.quiet.status', return_value=night), \
+                patch('speakers.backends.sonos._pool') as pool:
+            enforcer._on_event('Top Deck', self.zs[1])(MagicMock(variables={'volume': {'Master': '70'}}))
+            pool.submit.assert_called_once_with(enforcer._limit_zone, self.zs[1], 25)
+            pool.submit.reset_mock()
+            enforcer._on_event('Top Deck', self.zs[1])(MagicMock(variables={'volume': {'Master': '20'}}))
+            pool.submit.assert_not_called()
+
+    def test_sweep_drops_subscriptions_when_limit_ends(self):
+        sub = MagicMock()
+        enforcer._subs['Top Deck'] = sub
+        with patch('speakers.quiet.status', return_value=None):
+            enforcer.sweep()
+        sub.unsubscribe.assert_called_once()
+        self.assertEqual(enforcer._subs, {})
 
 class SourceTests(TestCase):
     def test_sources(self):
@@ -730,7 +854,7 @@ class MixedBackendTests(HABase):
         sonos._found.update({z.uid: z for z in self.zs})
         sonos._found_at = float('inf')
         self.ha.states['lodge'].append(player('media_player.dining_room', ' dining room ', 'playing'))
-        p = patch('speakers.backends.sonos.night_status', return_value=None)
+        p = patch('speakers.quiet.status', return_value=None)
         p.start()
         self.addCleanup(p.stop)
         p = patch('speakers.backends.sonos._discover_sonos', side_effect=lambda **kw: set(self.zs))
