@@ -92,12 +92,13 @@ no longer read (since 3.1).
     saved.
   - `BDH_SPEAKERS_INTERFACE`: IP of the interface
     on the Sonos network, for Docker with host networking.
-  - `BDH_SPEAKERS_NIGHT_URL`: status endpoint of the
-    [appdaemon-sonos-night](https://github.com/sslivins/appdaemon-sonos-night)
-    app, e.g. `http://192.168.10.217:5050/api/appdaemon/sonos_night`. During
-    quiet hours the page shows the limit and caps the outdoor sliders. The
-    limit itself is enforced by that app, so phones can't get around it.
-    Unset means no night limit is shown.
+  - Quiet hours (Settings page): `quiet_enabled`, `quiet_start` /
+    `quiet_end` (`HH:MM`, the end may be after midnight), `quiet_limit`
+    (volume %) and `quiet_rooms` (Sonos rooms). During quiet hours the page
+    shows a banner and the sliders of those rooms stop at the limit. The app
+    also subscribes to each quiet room's volume events (plus a 30 s sweep),
+    so a change from the Sonos app or a phone is turned back down. An admin
+    can lift the limit until the end of tonight's window from the banner.
 
 ## Container (hub API 2)
 
