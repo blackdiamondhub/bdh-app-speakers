@@ -60,9 +60,9 @@ Sonos. A backend that fails is logged and left out; the others keep working.
 
 Each reads the Settings page, then the environment variable, then the Django
 setting of the same name; the hub fills the Django settings from
-`[apps.speakers]` in its `sites/<site>/site.toml`. For the move from
-`sonos_control`, every setting not found under `speakers` is looked up under
-the old `sonos_control` names (`BDH_SONOS_CONTROL_*`, `[apps.sonos_control]`).
+`[apps.speakers]` in its `sites/<site>/site.toml`. The old `sonos_control`
+names (`BDH_SONOS_CONTROL_*`, `SONOS_INTERFACE`, `[apps.sonos_control]`) are
+no longer read (since 3.1).
 
 - `BDH_SPEAKERS_BACKENDS`: Speaker systems, `sonos` and/or `ha` (default
   both).
@@ -90,7 +90,7 @@ the old `sonos_control` names (`BDH_SONOS_CONTROL_*`, `[apps.sonos_control]`).
   - `BDH_SPEAKERS_MODELS`: comma-separated model names to control (default
     `Amp`); `*` controls every Sonos. Ignored once Speakers to show has been
     saved.
-  - `BDH_SPEAKERS_INTERFACE` (legacy `SONOS_INTERFACE`): IP of the interface
+  - `BDH_SPEAKERS_INTERFACE`: IP of the interface
     on the Sonos network, for Docker with host networking.
   - `BDH_SPEAKERS_NIGHT_URL`: status endpoint of the
     [appdaemon-sonos-night](https://github.com/sslivins/appdaemon-sonos-night)
@@ -109,15 +109,6 @@ permissions: `ha.read:media_player.*` and `ha.call:media_player.*` (Home
 Assistant players) and `media` (album art through `ha.get_static`). Settings
 come from the hub through the broker. The app has no database tables, so
 moving between in-process and container needs no migration.
-
-## Upgrading from sonos_control
-
-Requires bdh-sdk 0.29 (multiple Home Assistant instances). In the hub, replace
-`bdh-app-sonos-control` with `bdh-app-speakers` in `sites/<site>/apps.txt`
-and rename `[apps.sonos_control]` to `[apps.speakers]` in `site.toml` (the old
-section is still read in-process as a fallback). The page moves from
-`/sonos_control/` to `/speakers/`. A saved Speakers to show list keeps
-working for Sonos; tick the Home Assistant players to show alongside.
 
 ## Development
 

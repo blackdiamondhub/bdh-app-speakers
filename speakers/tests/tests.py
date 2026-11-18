@@ -98,19 +98,18 @@ class DiscoveryTests(TestCase):
         reset()
 
     @patch('speakers.backends.sonos.soco.discover', return_value=set())
-    def test_namespaced_interface_wins(self, discover):
-        env = {'BDH_SPEAKERS_INTERFACE': '10.0.0.5', 'SONOS_INTERFACE': '10.0.0.9'}
-        with patch.dict(os.environ, env):
+    def test_interface_setting(self, discover):
+        with patch.dict(os.environ, {'BDH_SPEAKERS_INTERFACE': '10.0.0.5'}):
             sonos._discover_sonos(timeout=1)
         discover.assert_called_once_with(timeout=1, interface_addr='10.0.0.5')
 
+    @override_settings(BDH_SONOS_CONTROL_INTERFACE='10.0.0.9', SONOS_INTERFACE='10.0.0.9')
     @patch('speakers.backends.sonos.soco.discover', return_value=set())
-    def test_legacy_interface_still_works(self, discover):
-        with patch.dict(os.environ, {'SONOS_INTERFACE': '10.0.0.9'}):
+    def test_old_sonos_control_names_are_ignored(self, discover):
+        with patch.dict(os.environ, {'BDH_SONOS_CONTROL_INTERFACE': '10.0.0.9', 'SONOS_INTERFACE': '10.0.0.9'}):
             os.environ.pop('BDH_SPEAKERS_INTERFACE', None)
-            os.environ.pop('BDH_SONOS_CONTROL_INTERFACE', None)
             sonos._discover_sonos()
-        discover.assert_called_once_with(interface_addr='10.0.0.9')
+        discover.assert_called_once_with()
 
     def test_only_amps_are_controllable(self):
         with patch('speakers.backends.sonos._discover_sonos', return_value=set(household())):
@@ -130,9 +129,8 @@ class SiteConfigTests(TestCase):
     def test_default_preset_is_everywhere(self):
         from django.conf import settings
         with override_settings():
-            for name in ('BDH_SPEAKERS_PRESETS', 'BDH_SONOS_CONTROL_PRESETS'):
-                if hasattr(settings, name):  # the hub's site.toml may set one
-                    delattr(settings, name)
+            if hasattr(settings, 'BDH_SPEAKERS_PRESETS'):  # the hub's site.toml may set it
+                delattr(settings, 'BDH_SPEAKERS_PRESETS')
             self.assertEqual([p['rooms'] for p in sonos.presets()], ['*'])
 
     @override_settings(BDH_SPEAKERS_ROOMS={'Kitchen': {'label': 'Kitchen', 'icon': 'fa-utensils'}})
@@ -265,7 +263,6 @@ class NightStatusTests(TestCase):
     def test_off_without_url(self):
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop('BDH_SPEAKERS_NIGHT_URL', None)
-            os.environ.pop('BDH_SONOS_CONTROL_NIGHT_URL', None)
             self.assertIsNone(sonos.night_status())
 
     @patch('speakers.backends.sonos.urllib.request.urlopen')
