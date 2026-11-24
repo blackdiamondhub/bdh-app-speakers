@@ -18,7 +18,7 @@ group card has an Ungroup button. A soundbar playing its TV (or a line-in)
 gets volume only, and Pause all and the homepage tile leave it alone. Guests
 play music from their own phones (Spotify Connect, AirPlay and so on).
 Installed into the hub through the `blackdiamondhub.plugins` entry point
-(see [bdh-sdk](https://github.com/blackdiamondlodge/bdh-sdk)).
+(see [bdh-sdk](https://github.com/blackdiamondhub/bdh-sdk)).
 
 Page: `/speakers/`. The page polls `state/` every 2 seconds and sends changes
 to `action/`. Every screen shares one cached snapshot, so the speakers see the
