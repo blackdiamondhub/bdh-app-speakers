@@ -170,6 +170,23 @@ def _is_input(uri):
     return uri.startswith('x-sonos-htastream') or uri.startswith('x-rincon-stream')
 
 
+def _members(group):
+    """The rooms in a group.
+
+    soco also lists a home theatre's surrounds and sub as members; they are
+    part of their room, not rooms of their own, and can't be unjoined.
+    """
+    out = []
+    for m in group.members:
+        try:
+            visible = m.is_visible
+        except Exception:  # noqa: BLE001 - unreachable; keep it as a room
+            visible = True
+        if visible:
+            out.append(m)
+    return out
+
+
 def _room_state(zone):
     try:
         return {'volume': zone.volume, 'muted': zone.mute, 'online': True}
@@ -222,7 +239,7 @@ def _build_snapshot():
     # members of a group that also has a picked room.
     coord_of, guests, coord_zone = {}, {}, {}
     for g in groups:
-        members = list(g.members)
+        members = _members(g)
         if not any(m.uid in zs for m in members):
             continue
         coord_zone[g.coordinator.uid] = g.coordinator
@@ -314,7 +331,7 @@ def _group(group_id):
 def _leave(z):
     """Remove a room from its group without stopping the others."""
     group = z.group
-    members = [m for m in group.members if m.uid != z.uid]
+    members = [m for m in _members(group) if m.uid != z.uid]
     if not members:
         return
     if group.coordinator.uid == z.uid:
@@ -339,7 +356,7 @@ def join(uid, target_group):
         return
     if z.group.coordinator.uid == coord.group.coordinator.uid:
         return
-    if z.is_coordinator and len(z.group.members) > 1:
+    if z.is_coordinator and len(_members(z.group)) > 1:
         _leave(z)
     z.join(coord.group.coordinator)
 
@@ -364,7 +381,7 @@ def set_rooms(room, uids):
         raise SonosError('Pick at least one room')
     group = _group(room)
     coord = group.coordinator
-    current = [m.uid for m in group.members if m.uid in zs]
+    current = [m.uid for m in _members(group) if m.uid in zs]
     kept = [u for u in current if u in wanted]
     anchor = coord if coord.uid in wanted else zs[(kept or wanted)[0]]
 
@@ -376,7 +393,7 @@ def set_rooms(room, uids):
         time.sleep(0.5)  # let the coordinator hand-off settle
     _refresh(anchor)
 
-    if anchor.uid not in current and len(anchor.group.members) > 1:
+    if anchor.uid not in current and len(_members(anchor.group)) > 1:
         _leave(anchor)
         _refresh(anchor)
     for u in wanted:
@@ -408,7 +425,7 @@ def set_group(names):
     coord = next((z for z in coords if playing(z)), None) or (coords[0] if coords else targets[0])
     if not coord.is_coordinator:
         _leave(coord)
-    for m in list(coord.group.members):
+    for m in _members(coord.group):
         if m.uid not in target_ids and m.uid != coord.uid:
             _leave(m)
     for z in targets:
@@ -431,7 +448,7 @@ def _split(group, shown):
     would vanish from the hub still playing, so it is paused.
     """
     coord = group.coordinator
-    for m in list(group.members):
+    for m in _members(group):
         if m.uid != coord.uid:
             m.unjoin()
     if coord.uid not in shown and _transport_state(coord) == 'PLAYING':
@@ -450,7 +467,7 @@ def ungroup_all():
     seen = set()
     for z in zs.values():
         g = z.group
-        if g.coordinator.uid in seen or len(g.members) < 2:
+        if g.coordinator.uid in seen or len(_members(g)) < 2:
             continue
         seen.add(g.coordinator.uid)
         _split(g, zs)
@@ -497,7 +514,7 @@ def transport(group_id, op):
 
 def set_group_volume(group_id, volume):
     group = _group(group_id)
-    group.volume = _clamp(volume, _quiet_cap(list(group.members)))
+    group.volume = _clamp(volume, _quiet_cap(_members(group)))
 
 
 def set_room_volume(uid, volume):

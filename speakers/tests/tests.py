@@ -19,6 +19,7 @@ class FakeZone:
         self.model = model
         self.volume = volume
         self.mute = False
+        self.is_visible = True
         self.group = None
         self.avTransport = MagicMock()
         self.zone_group_state = MagicMock()
@@ -500,6 +501,54 @@ class SpeakerPickerTests(TestCase):
             choices = dict(sonos.speaker_choices())
         self.assertEqual(choices['OF'], 'Office (Arc Ultra) \u2013 offline')
         self.assertEqual(choices['GONE'], 'GONE \u2013 offline')
+
+
+class HomeTheatreTests(TestCase):
+    """A soundbar's bonded sub and surrounds are part of its room, never group members."""
+
+    def setUp(self):
+        self.zs = household()
+        bar = self.zs[3]
+        self.sats = [FakeZone('Office', 'SL'), FakeZone('Office', 'SR'), FakeZone('Sub 4', 'SUB')]
+        for s in self.sats:
+            s.is_visible = False
+            s.unjoin = MagicMock(side_effect=Exception('UPnP Error 800'))
+            s.join = MagicMock(side_effect=Exception('UPnP Error 800'))
+        FakeGroup(bar, [bar, *self.sats])
+        HOUSEHOLD.extend(self.sats)
+        sonos._zones.clear()
+        sonos._zones.update({z.uid: z for z in self.zs})
+        sonos._zones_at = float('inf')
+        self.addCleanup(reset)
+
+    def test_snapshot_shows_the_soundbar_alone(self):
+        snap = sonos.snapshot(force=True)
+        groups = {g['id']: g['members'] for g in snap['groups']}
+        self.assertEqual(groups['OF'], ['OF'])
+        self.assertEqual(sorted(r['uid'] for r in snap['rooms']), ['DR', 'HT', 'OF', 'TD'])
+
+    def test_ungroup_leaves_satellites_alone(self):
+        sonos.ungroup('OF')
+        for s in self.sats:
+            s.unjoin.assert_not_called()
+
+    def test_ungroup_all_skips_home_theatre_and_splits_real_groups(self):
+        sonos.ungroup_all()
+        for s in self.sats:
+            s.unjoin.assert_not_called()
+        self.assertEqual(self.zs[1].group.members, [self.zs[1]])
+
+    def test_soundbar_joins_without_handing_off_to_its_sub(self):
+        sonos.set_rooms('DR', ['DR', 'TD', 'OF'])
+        self.zs[3].avTransport.DelegateGroupCoordinationTo.assert_not_called()
+        self.assertIs(self.zs[3].group.coordinator, self.zs[0])
+
+    def test_preset_with_home_theatre(self):
+        sonos.set_group(['Office', 'Hot Tub'])
+        self.zs[3].avTransport.DelegateGroupCoordinationTo.assert_not_called()
+        for s in self.sats:
+            s.unjoin.assert_not_called()
+        self.assertIs(self.zs[3].group.coordinator, self.zs[2])
 
 
 class PickedGroupTests(TestCase):
