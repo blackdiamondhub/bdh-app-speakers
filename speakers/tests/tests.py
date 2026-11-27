@@ -1198,6 +1198,9 @@ class AssistantTests(TestCase):
         self.assertEqual(self.run_tool('media_control', action='next', speakers='hot tub'),
                          'Skipped to the next track in the Hot Tub.')
         self.assertEqual(self.calls, [('transport', 'sonos:HT', 'next')])
+        with self.assertRaises(ToolError) as cm:
+            self.run_tool('media_control', action='next', speakers='lower deck')
+        self.assertEqual(str(cm.exception), 'The Lower Deck is not playing anything.')
 
     def test_pause_tv_reports_why(self, *_):
         self.snap = lodge(LR={'state': 'PLAYING', 'tv': True})
