@@ -369,7 +369,8 @@ def _control(args, mode):
             _ask_which(chosen, snap, 'playing')
     done, already, failed = [], [], []
     for g in chosen:
-        if (op == 'pause' and g['state'] not in PLAYING) or (op == 'play' and g['state'] in PLAYING):
+        if ((op == 'pause' and g['state'] not in PLAYING) or (op == 'play' and g['state'] in PLAYING)
+                or (op in ('next', 'previous') and g['state'] not in PLAYING)):
             already.append(g)
             continue
         try:
@@ -401,9 +402,14 @@ def _control_text(action, snap, done, already, failed):
     if done:
         parts.append(DONE_TEXT[action].format(_the(labels(done))))
     if already:
-        state = 'playing' if action == 'resume' else 'not playing'
         names = labels(already)
-        parts.append(f"{_cap(_the(names))} {_verb(names, 'was', 'were')} already {state}.")
+        if action in ('next', 'previous'):
+            parts.append(f"{_cap(_the(names))} {_verb(names, 'is', 'are')} not playing anything.")
+            if not done:
+                raise ToolError(' '.join(parts))
+        else:
+            state = 'playing' if action == 'resume' else 'not playing'
+            parts.append(f"{_cap(_the(names))} {_verb(names, 'was', 'were')} already {state}.")
     for g, reason in failed:
         parts.append(f"{_cap(_the(labels([g])))}: {reason[:1].lower()}{reason[1:]}.")
     if not done and failed and not already:
