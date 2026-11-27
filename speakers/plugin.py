@@ -50,7 +50,18 @@ spec = PluginSpec(
         Setting("quiet_rooms", "Quiet hours: rooms", type=MULTI, default=None,
                 choices_from="speakers.quiet.room_choices",
                 help="Sonos rooms held to the limit."),
+        Setting("assistant_max_volume", "Assistant: loudest volume", type=INT, default=60,
+                minimum=0, maximum=100, unit="%",
+                help="The voice assistant never turns a room up past this for guests (owner "
+                     "sessions excepted), and turns a louder room down to it before putting "
+                     "music on. Quiet hours still apply on top."),
+        Setting("default_music", "Assistant: default music", type=STR, default="Smooth Jazz",
+                help="What the assistant puts on for \u201cplay some music\u201d when there is "
+                     "nothing to resume: a Sonos favorite's name or a TuneIn search."),
     ),
+    # The assistant can say what's playing, put music on, pause/skip, set volume and group rooms.
+    tools="speakers.assistant.tools",
+    run_tool="speakers.assistant.run_tool",
     # Home Assistant media players: read their state, call media_player services,
     # and fetch album art through HA's media_player proxy.
     permissions=("ha.read:media_player.*", "ha.call:media_player.*", "media"),

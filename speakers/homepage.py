@@ -121,6 +121,36 @@ def _expect(state, gid, op, now):
     state['expect'][gid] = (op, now + EXPECT_SECONDS)
 
 
+def remember_paused(gids):
+    """Groups the assistant paused: the tile offers Resume for them, as after Pause everything."""
+    if not gids:
+        return
+    now = time.time()
+    state = _load()
+    for gid in gids:
+        _expect(state, gid, 'pause', now)
+        state['playing'].pop(gid, None)
+        state['paused'][gid] = now
+        state['resume'][gid] = now
+    _save(state)
+
+
+def to_resume():
+    """Ids of the groups paused recently from the tile or the assistant, to resume."""
+    return list(_load()['resume'])
+
+
+def resumed(gids):
+    if not gids:
+        return
+    now = time.time()
+    state = _load()
+    for gid in gids:
+        _expect(state, gid, 'play', now)
+        state['resume'].pop(gid, None)
+    _save(state)
+
+
 def run_action(row_id, action_id):
     now = time.time()
     state = _load()

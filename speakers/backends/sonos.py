@@ -512,6 +512,14 @@ def transport(group_id, op):
         raise SonosError('Unknown transport op')
 
 
+def play_item(group_id, item):
+    """Play a favorite or station on the group; a soundbar showing the TV is left alone."""
+    c = _group(group_id).coordinator
+    if _transport_state(c) == 'PLAYING' and _on_input(c):
+        raise SonosError('This speaker is playing the TV')
+    c.play_uri(item.uri, item.meta or '', title=item.title)
+
+
 def set_group_volume(group_id, volume):
     group = _group(group_id)
     group.volume = _clamp(volume, _quiet_cap(_members(group)))
@@ -557,6 +565,9 @@ class SonosBackend(Backend):
 
     def transport(self, group, op):
         transport(group, op)
+
+    def play_item(self, group, item):
+        play_item(group, item)
 
     def set_group_volume(self, group, volume):
         set_group_volume(group, volume)

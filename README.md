@@ -99,6 +99,35 @@ no longer read (since 3.1).
     also subscribes to each quiet room's volume events (plus a 30 s sweep),
     so a change from the Sonos app or a phone is turned back down. An admin
     can lift the limit until the end of tonight's window from the banner.
+- `BDH_SPEAKERS_ASSISTANT_MAX_VOLUME`: the loudest the voice assistant sets a
+  room outside owner mode (default 60 %; also on the Settings page).
+- `BDH_SPEAKERS_DEFAULT_MUSIC`: what the assistant puts on for "play some
+  music" (default `Smooth Jazz`, searched like any request).
+
+## Assistant tools
+
+The app gives the hub's voice assistant these tools (enable them by adding
+`speakers` to the hub's `assistant_apps`). They act only on the rooms in
+Speakers to show; rooms are named loosely: a room's label or name, several
+(`kitchen and top deck`), a floor (`upstairs`, `main floor`, `downstairs`,
+`outside`), a preset or `everywhere`, with small speech slips forgiven. A
+name that could mean several rooms (`the deck`) asks back. Every mode may
+use them, none asks to confirm, and answers are short sentences.
+
+| Tool | Params | Does |
+| --- | --- | --- |
+| `speaker_status` (read-only) | `speakers`? | What's playing where, and volumes; nothing named: the rooms playing plus the ones off. |
+| `play_music` | `speakers`, `what`? | Plays a Sonos favorite whose name matches, else the best TuneIn station for `what` (genre, artist, station). No `what`: resumes the paused music there, else `default_music`. Groups the rooms first if needed; a soundbar showing the TV is left alone. |
+| `media_control` | `action` (`pause`/`resume`/`stop`/`next`/`previous`), `speakers`? | No `speakers`: pause/stop everything playing, resume what the assistant (or the tile) paused, skip the one room playing (else asks). Stop is a pause. |
+| `set_volume` | `level` 0–100 or `change` up/down (`by`, default 10), `speakers`? | Sets room volumes; no `speakers`: the one group playing. |
+| `group_speakers` | `action` (`join`/`separate`), `speakers` | Join: the others pick up what one of them is playing. Separate: take rooms out of their group. |
+
+Outside owner mode the assistant never sets a room above
+`assistant_max_volume`, and turns louder rooms down to it before starting
+music; turning down is always allowed. Quiet hours still apply on top. Only
+playable favorites (stations, streams) are matched: shortcuts into a music
+service such as Sonos Radio's can't be started over the LAN. TuneIn needs no
+account; no credentials are stored or exposed.
 
 ## Container (hub API 2)
 
