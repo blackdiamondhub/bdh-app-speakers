@@ -972,3 +972,298 @@ class HubFrameLayoutTests(SimpleTestCase):
                 if pattern.search(line):
                     hits.append(f"{path.relative_to(root)}:{n}: {line.strip()}")
         self.assertEqual(hits, [])
+
+
+# ---------------------------------------------------------------- assistant tools
+
+from bdh_sdk import ALL_MODES  # noqa: E402
+from bdh_sdk.tools import ToolError  # noqa: E402
+
+from speakers import assistant, homepage, music  # noqa: E402
+from speakers.matching import Ambiguous, NoMatch, Rooms  # noqa: E402
+
+
+def a_room(uid, label, floor, group=None, volume=30, name=None, **extra):
+    return {'uid': f'sonos:{uid}', 'label': label, 'name': name or label, 'floor': floor,
+            'group': f'sonos:{group or uid}', 'shown': True, 'volume': volume, 'muted': False,
+            'online': True, 'can_group': True, 'backend': 'sonos', **extra}
+
+
+def a_group(uid, members, state='STOPPED', title='', artist='', volume=30, tv=False):
+    return {'id': f'sonos:{uid}', 'members': [f'sonos:{m}' for m in members], 'state': state,
+            'title': title, 'artist': artist, 'album': '', 'art': '', 'volume': volume, 'tv': tv,
+            'source': {'name': 'Radio'} if title else None, 'can_pause': not tv, 'backend': 'sonos'}
+
+
+def lodge(**states):
+    """Dining Room + Top Deck grouped, the rest alone; ``states`` sets group states."""
+    rooms = [a_room('DR', 'Dining Room', 'main'), a_room('TD', 'Top Deck', 'outside_main', group='DR'),
+             a_room('LD', 'Lower Deck', 'outside_lower'), a_room('HT', 'Hot Tub', 'outside_lower'),
+             a_room('ME', 'Master En-suite', 'upper', name='Master Bedroom En-suite'),
+             a_room('BE', 'Basement En-suite', 'lower', name='Basement Master En-suite'),
+             a_room('LR', 'Living Room', 'main', volume=80)]
+    groups = [a_group('DR', ['DR', 'TD']), a_group('LD', ['LD']), a_group('HT', ['HT']),
+              a_group('ME', ['ME']), a_group('BE', ['BE']), a_group('LR', ['LR'], volume=80)]
+    for g in groups:
+        g.update(states.get(g['id'].split(':')[1], {}))
+    return {'rooms': rooms, 'groups': groups, 'presets': [{'label': 'Whole Lodge', 'rooms': '*'}]}
+
+
+class MatchingTests(SimpleTestCase):
+    def setUp(self):
+        self.rooms = Rooms([{k: r[k] for k in ('uid', 'label', 'name', 'floor')} for r in lodge()['rooms']],
+                           [{'label': 'Whole Lodge', 'rooms': '*'}])
+
+    def uids(self, text):
+        return [u.split(':')[1] for u in (r['uid'] for r in self.rooms.resolve(text))]
+
+    def test_room_floor_and_everything(self):
+        self.assertEqual(self.uids('the living room speakers'), ['LR'])
+        self.assertEqual(self.uids('master bedroom'), ['ME'])
+        self.assertEqual(self.uids('basement'), ['BE'])
+        self.assertEqual(self.uids('outside'), ['TD', 'LD', 'HT'])
+        self.assertEqual(self.uids('dining room and top deck'), ['DR', 'TD'])
+        self.assertEqual(len(self.uids('everywhere')), 7)
+        self.assertEqual(len(self.uids('whole lodge')), 7)
+
+    def test_plural_means_all_of_them(self):
+        self.assertEqual(self.uids('the decks'), ['TD', 'LD'])
+
+    def test_asr_slips(self):
+        self.assertEqual(self.uids('hot tube'), ['HT'])
+        self.assertEqual(self.uids('dinning room'), ['DR'])
+        self.assertEqual(self.uids('master en suite'), ['ME'])
+
+    def test_ambiguous_asks(self):
+        with self.assertRaises(Ambiguous) as cm:
+            self.rooms.resolve('the deck')
+        self.assertIn('Top Deck and Lower Deck', str(cm.exception))
+        with self.assertRaises(Ambiguous):
+            self.rooms.resolve('master')
+
+    def test_unknown_lists_rooms(self):
+        with self.assertRaises(NoMatch) as cm:
+            self.rooms.resolve('kitchen')
+        self.assertIn("no speaker called 'kitchen'", str(cm.exception))
+        self.assertIn('Hot Tub', str(cm.exception))
+
+
+@patch('speakers.assistant.time.sleep')
+@patch.object(service, 'invalidate')
+class AssistantTests(TestCase):
+    def setUp(self):
+        from django.core.cache import cache
+        cache.delete(homepage.STATE_KEY)
+        self.snap = lodge()
+        patcher = patch.object(service, 'snapshot', side_effect=lambda force=False: self.snap)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.calls = []
+        for name in ('transport', 'set_room_volume', 'set_room_mute', 'play_item', 'ungroup'):
+            p = patch.object(service, name, side_effect=lambda *a, _n=name: self.calls.append((_n, *a)))
+            p.start()
+            self.addCleanup(p.stop)
+        p = patch.object(service, 'set_rooms', side_effect=self._set_rooms)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _set_rooms(self, room, rooms):
+        self.calls.append(('set_rooms', room, list(rooms)))
+        return room
+
+    def run_tool(self, tool, mode='guest', **args):
+        return assistant.run_tool(tool, args, mode=mode)
+
+    def test_tools_declared(self, *_):
+        tools = {t.id: t for t in assistant.tools('guest')}
+        self.assertEqual(set(tools), {'speaker_status', 'play_music', 'media_control', 'set_volume',
+                                      'group_speakers'})
+        for t in tools.values():
+            self.assertEqual(t.modes, ALL_MODES)
+            self.assertFalse(t.confirm)
+            self.assertEqual(t.readonly, t.id == 'speaker_status')
+        self.assertIn('Hot Tub', tools['play_music'].params['properties']['speakers']['description'])
+        self.assertEqual(tools['play_music'].params['required'], ['speakers'])
+
+    def test_status_compact(self, *_):
+        self.snap = lodge(DR={'state': 'PLAYING', 'title': 'So What', 'artist': 'Miles Davis',
+                              'source': {'name': 'Radio'}})
+        text = self.run_tool('speaker_status')
+        self.assertTrue(text.startswith('Dining Room + Top Deck: playing So What by Miles Davis (Radio), 30%.'), text)
+        self.assertIn('Off: Lower Deck, Hot Tub', text)
+        self.assertEqual(self.run_tool('speaker_status', speakers='living room'), 'Living Room: off, 80%.')
+
+    def test_status_nothing_playing(self, *_):
+        self.assertTrue(self.run_tool('speaker_status').startswith('Nothing is playing. The speakers are in Dining Room'))
+
+    def test_play_favorite_on_existing_group(self, *_):
+        fav = music.Item('Jazz24', 'x-sonosapi-stream:s34682?sid=254', '', 'favorite')
+        with patch.object(music, 'favorites', return_value=[fav]), \
+                patch.object(music, 'search_station') as search:
+            text = self.run_tool('play_music', speakers='dining room and top deck', what='jazz24 radio')
+        search.assert_not_called()
+        self.assertEqual(self.calls, [('play_item', 'sonos:DR', fav)])
+        self.assertEqual(text, 'Playing Jazz24 in the Dining Room and Top Deck.')
+
+    def test_play_searches_tunein_and_groups_rooms(self, *_):
+        found = music.station('s249973', 'Smooth Jazz')
+        with patch.object(music, 'favorites', return_value=[]), \
+                patch.object(music, 'search_station', return_value=found) as search:
+            text = self.run_tool('play_music', speakers='hot tub, lower deck', what='some jazz music')
+        search.assert_called_once_with('jazz')
+        self.assertEqual(self.calls, [('set_rooms', 'sonos:LD', ['sonos:LD', 'sonos:HT']),
+                                      ('play_item', 'sonos:LD', found)])
+        self.assertEqual(text, 'Playing Smooth Jazz in the Lower Deck and Hot Tub.')
+
+    def test_play_nothing_named_resumes(self, *_):
+        self.snap = lodge(HT={'state': 'PAUSED_PLAYBACK', 'title': 'So What'})
+        self.assertEqual(self.run_tool('play_music', speakers='hot tub'), 'Resuming So What in the Hot Tub.')
+        self.assertEqual(self.calls, [('transport', 'sonos:HT', 'play')])
+
+    @override_settings(BDH_SPEAKERS_DEFAULT_MUSIC='Bluegrass')
+    def test_play_some_music_uses_default(self, *_):
+        with patch.object(music, 'find', return_value=music.station('s1', 'Bluegrass Radio')) as find:
+            self.run_tool('play_music', speakers='hot tub', what='some music')
+        find.assert_called_once_with('Bluegrass')
+
+    def test_play_unknown_music(self, *_):
+        with patch.object(music, 'favorites', return_value=[]), \
+                patch.object(music, 'search_station', return_value=None):
+            with self.assertRaises(ToolError):
+                self.run_tool('play_music', speakers='hot tub', what='zzz')
+        self.assertEqual(self.calls, [])
+
+    def test_play_turns_a_loud_room_down_for_guests(self, *_):
+        with patch.object(music, 'find', return_value=music.station('s1', 'Jazz')):
+            text = self.run_tool('play_music', speakers='living room', what='jazz')
+            self.calls.clear()
+            self.run_tool('play_music', mode='owner', speakers='living room', what='jazz')
+        self.assertIn('turned the Living Room down to 60%', text)
+        self.assertNotIn('set_room_volume', [c[0] for c in self.calls])
+
+    def test_ambiguous_room_asks(self, *_):
+        with self.assertRaises(ToolError) as cm:
+            self.run_tool('play_music', speakers='the deck', what='jazz')
+        self.assertIn('Top Deck and Lower Deck', str(cm.exception))
+
+    def test_volume_capped_for_guests(self, *_):
+        text = self.run_tool('set_volume', speakers='hot tub', level=90)
+        self.assertEqual(self.calls, [('set_room_volume', 'sonos:HT', 60)])
+        self.assertEqual(text, 'The Hot Tub is at 60%. 60% is as loud as I can set it.')
+        self.calls.clear()
+        self.run_tool('set_volume', mode='owner', speakers='hot tub', level=90)
+        self.assertEqual(self.calls, [('set_room_volume', 'sonos:HT', 90)])
+
+    def test_volume_up_never_lowers_a_loud_room(self, *_):
+        self.assertIn('as loud as I can', self.run_tool('set_volume', speakers='living room', change='up'))
+        self.assertEqual(self.calls, [])
+        self.run_tool('set_volume', speakers='living room', change='down', by=5)
+        self.assertEqual(self.calls, [('set_room_volume', 'sonos:LR', 75)])
+
+    @override_settings(BDH_SPEAKERS_ASSISTANT_MAX_VOLUME=40)
+    def test_volume_cap_setting(self, *_):
+        self.run_tool('set_volume', speakers='hot tub', level=50)
+        self.assertEqual(self.calls, [('set_room_volume', 'sonos:HT', 40)])
+
+    def test_volume_follows_the_room_playing(self, *_):
+        self.snap = lodge(DR={'state': 'PLAYING', 'title': 'x'})
+        self.assertEqual(self.run_tool('set_volume', change='up'), 'The Dining Room and Top Deck are at 40%.')
+        self.assertEqual(self.calls, [('set_room_volume', 'sonos:DR', 40), ('set_room_volume', 'sonos:TD', 40)])
+
+    def test_volume_quiet_hours_hold(self, *_):
+        night = {'active': True, 'limit': 25, 'end': '07:00', 'rooms': ['Hot Tub']}
+        with patch('speakers.quiet.status', return_value=night), \
+                patch('speakers.quiet.cap_for', side_effect=lambda names: 25 if 'Hot Tub' in names else None):
+            text = self.run_tool('set_volume', speakers='hot tub', level=50)
+        self.assertEqual(self.calls, [('set_room_volume', 'sonos:HT', 25)])
+        self.assertIn('Quiet hours hold the Hot Tub to 25% until 07:00', text)
+
+    def test_pause_everything_then_resume(self, *_):
+        self.snap = lodge(DR={'state': 'PLAYING', 'title': 'x'}, HT={'state': 'PLAYING', 'title': 'y'},
+                          LR={'state': 'PLAYING', 'title': 'TV audio', 'tv': True})
+        text = self.run_tool('media_control', action='stop')
+        self.assertEqual(self.calls, [('transport', 'sonos:DR', 'pause'), ('transport', 'sonos:HT', 'pause')])
+        self.assertEqual(text, 'Stopped the music in the Dining Room, Top Deck and Hot Tub.')
+        self.calls.clear()
+        self.snap = lodge(DR={'state': 'PAUSED_PLAYBACK', 'title': 'x'}, HT={'state': 'PAUSED_PLAYBACK', 'title': 'y'},
+                          BE={'state': 'PAUSED_PLAYBACK', 'title': 'old'})
+        self.run_tool('media_control', action='resume')
+        self.assertEqual(sorted(self.calls), [('transport', 'sonos:DR', 'play'), ('transport', 'sonos:HT', 'play')])
+
+    def test_skip_needs_one_room_playing(self, *_):
+        self.snap = lodge(DR={'state': 'PLAYING', 'title': 'x'}, HT={'state': 'PLAYING', 'title': 'y'})
+        with self.assertRaises(ToolError) as cm:
+            self.run_tool('media_control', action='next')
+        self.assertIn('Which one?', str(cm.exception))
+        self.assertEqual(self.run_tool('media_control', action='next', speakers='hot tub'),
+                         'Skipped to the next track in the Hot Tub.')
+        self.assertEqual(self.calls, [('transport', 'sonos:HT', 'next')])
+
+    def test_pause_tv_reports_why(self, *_):
+        self.snap = lodge(LR={'state': 'PLAYING', 'tv': True})
+        service.transport.side_effect = SpeakerError('This speaker is playing the TV')
+        with self.assertRaises(ToolError) as cm:
+            self.run_tool('media_control', action='pause', speakers='living room')
+        self.assertIn('playing the TV', str(cm.exception))
+
+    def test_group_join_and_separate(self, *_):
+        self.snap = lodge(HT={'state': 'PLAYING', 'title': 'So What'})
+        text = self.run_tool('group_speakers', action='join', speakers='lower deck with the hot tub')
+        self.assertEqual(self.calls, [('set_rooms', 'sonos:HT', ['sonos:HT', 'sonos:LD'])])
+        self.assertEqual(text, 'The Hot Tub and Lower Deck now play together, playing So What.')
+        self.calls.clear()
+        self.snap = lodge()
+        self.assertEqual(self.run_tool('group_speakers', action='separate', speakers='top deck'),
+                         'The Top Deck plays on its own now.')
+        self.assertEqual(self.calls, [('set_rooms', 'sonos:DR', ['sonos:DR'])])
+
+    def test_speakers_down(self, *_):
+        service.snapshot.side_effect = RuntimeError('boom')
+        with self.assertRaises(ToolError) as cm:
+            self.run_tool('speaker_status')
+        self.assertEqual(str(cm.exception), assistant.DOWN)
+
+
+class MusicTests(SimpleTestCase):
+    def test_station_uri_and_meta(self):
+        item = music.station('s249973', 'Smooth & Jazz')
+        self.assertEqual(item.uri, 'x-sonosapi-stream:s249973?sid=254&flags=8224&sn=0')
+        self.assertIn('id="F00092020s249973"', item.meta)
+        self.assertIn('Smooth &amp; Jazz', item.meta)
+
+    def test_search_picks_a_station(self):
+        results = [MagicMock(item_id='0fffffffp123', title='A show'),
+                   MagicMock(item_id='0fffffffs249973', title='Smooth Jazz')]
+        service_ = MagicMock()
+        service_.search.return_value = results
+        with patch.object(music, '_tunein', return_value=service_):
+            self.assertEqual(music.search_station('jazz').uri.split('?')[0], 'x-sonosapi-stream:s249973')
+
+    def test_query_drops_vague_words(self):
+        self.assertEqual(music.query('some jazz music please'), 'jazz')
+        self.assertEqual(music.query('some music'), '')
+
+
+class SonosPlayItemTests(TestCase):
+    def setUp(self):
+        self.zs = household()
+        sonos._zones.update({z.uid: z for z in self.zs})
+        sonos._zones_at = float('inf')
+
+    def tearDown(self):
+        reset()
+
+    def test_plays_on_the_coordinator(self):
+        self.zs[0].play_uri = MagicMock()
+        sonos.play_item('TD', music.station('s1', 'Jazz'))
+        self.zs[0].play_uri.assert_called_once()
+        self.assertEqual(self.zs[0].play_uri.call_args[0][0], 'x-sonosapi-stream:s1?sid=254&flags=8224&sn=0')
+
+    def test_leaves_a_soundbar_on_the_tv(self):
+        tv = self.zs[3]
+        tv.transport = 'PLAYING'
+        tv.play_uri = MagicMock()
+        tv.get_current_media_info = lambda: {'uri': 'x-sonos-htastream:RINCON_1:spdif'}
+        with self.assertRaises(SpeakerError):
+            sonos.play_item('OF', music.station('s1', 'Jazz'))
+        tv.play_uri.assert_not_called()

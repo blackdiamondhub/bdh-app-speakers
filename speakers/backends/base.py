@@ -113,3 +113,7 @@ class Backend(ABC):
     def art(self, room):
         """``(bytes, content_type)`` of the album art for a room's group, or None."""
         return None
+
+    def play_item(self, group, item):
+        """Start ``item`` (a :class:`speakers.music.Item`) on the group ``group`` leads."""
+        raise SpeakerError('These speakers can\u2019t play radio')

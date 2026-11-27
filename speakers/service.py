@@ -196,6 +196,11 @@ def transport(group, op):
     b.transport(local, op)
 
 
+def play_item(group, item):
+    b, local = _resolve(group)
+    b.play_item(local, item)
+
+
 def set_group_volume(group, volume):
     b, local = _resolve(group)
     b.set_group_volume(local, volume)
